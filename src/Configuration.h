@@ -43,7 +43,10 @@ public:
     ARM,
     POWER,
     PSO,
-    TSO
+    TSO,
+    CCV,
+    CM,
+    CC
   };
   enum DPORAlgorithm{
     SOURCE,
