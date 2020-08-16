@@ -437,6 +437,15 @@ DPORDriver::Result DPORDriver::run(){
   case Configuration::ARM:
     TB = new ARMTraceBuilder(conf);
     break;
+  case Configuration::CCV:
+    TB = new TSOTraceBuilder(conf);
+    break;
+  case Configuration::CM:
+    TB = new TSOTraceBuilder(conf);
+    break;
+  case Configuration::CC:
+    TB = new TSOTraceBuilder(conf);
+    break;
   case Configuration::POWER:
     TB = new POWERTraceBuilder(conf);
     break;

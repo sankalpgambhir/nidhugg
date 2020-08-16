@@ -78,7 +78,7 @@ cl_memory_model(llvm::cl::NotHidden, llvm::cl::init(Configuration::MM_UNDEF),
                                  clEnumValN(Configuration::POWER,"power","The POWER model"),
                                  clEnumValN(Configuration::PSO,"pso","Partial Store Order"),
                                  clEnumValN(Configuration::TSO,"tso","Total Store Order"),
-                                 clEnumValN(Configuration::CCV,"ccv","Casual Convergence"),
+                                 clEnumValN(Configuration::CCV,"ccv","Causal Convergence"),
                                  clEnumValN(Configuration::CM,"cm","Causal Memory"),
                                  clEnumValN(Configuration::CC,"cc","Causal Consistency")
 #ifdef LLVM_CL_VALUES_USES_SENTINEL
@@ -177,7 +177,7 @@ const std::set<std::string> &Configuration::commandline_opts(){
     "max-search-depth",
     "n-threads",
     "no-cpubind","no-cpubind-singlify",
-    "sc","tso","pso","power","arm",
+    "sc","tso","pso","power","arm","ccv","cm","cc",
     "smtlib",
     "source","optimal","observers","rf",
     "check-robustness",
@@ -279,6 +279,9 @@ void Configuration::check_commandline(){
     if(cl_memory_model == Configuration::SC) mm = "SC";
     if(cl_memory_model == Configuration::TSO) mm = "TSO";
     if(cl_memory_model == Configuration::PSO) mm = "PSO";
+    if(cl_memory_model == Configuration::CCV) mm = "CCV";
+    if(cl_memory_model == Configuration::CM) mm = "CM";
+    if(cl_memory_model == Configuration::CC) mm = "CC";
     if(cl_memory_model == Configuration::POWER) mm = "POWER";
     if(cl_memory_model == Configuration::ARM) mm = "ARM";
     if(cl_memory_model == Configuration::ARM || cl_memory_model == Configuration::POWER){
