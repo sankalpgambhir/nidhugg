@@ -759,6 +759,7 @@ void TSOTraceBuilder::do_load(const SymAddrSize &ml){
     for(SymAddr b : ml){
       A.insert(b);
     }
+    printf("dry\n");
     return;
   }
   curev().may_conflict = true;
