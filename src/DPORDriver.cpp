@@ -30,6 +30,7 @@
 #include "TSOInterpreter.h"
 #include "TSOTraceBuilder.h"
 #include "RFSCTraceBuilder.h"
+#include "CCTraceBuilder.h"
 #include "RFSCUnfoldingTree.h"
 #include "Cpubind.h"
 
@@ -141,6 +142,9 @@ create_execution_engine(TraceBuilder &TB, llvm::Module *mod,
   std::unique_ptr<DPORInterpreter> EE = 0;
   switch(conf.memory_model){
   case Configuration::SC:
+  case Configuration::CC:
+  case Configuration::CM:
+  case Configuration::CCV:
     EE = llvm::Interpreter::create(mod,static_cast<TSOPSOTraceBuilder&>(TB),conf,&ErrorMsg);
     break;
   case Configuration::TSO:
@@ -151,15 +155,6 @@ create_execution_engine(TraceBuilder &TB, llvm::Module *mod,
     break;
   case Configuration::ARM: case Configuration::POWER:
     EE = POWERInterpreter::create(mod,static_cast<POWERARMTraceBuilder&>(TB),conf,&ErrorMsg);
-    break;
-  case Configuration::CCV:
-    EE = llvm::Interpreter::create(mod,static_cast<TSOPSOTraceBuilder&>(TB),conf,&ErrorMsg);
-    break;
-  case Configuration::CM:
-    EE = llvm::Interpreter::create(mod,static_cast<TSOPSOTraceBuilder&>(TB),conf,&ErrorMsg);
-    break;
-  case Configuration::CC:
-    EE = llvm::Interpreter::create(mod,static_cast<TSOPSOTraceBuilder&>(TB),conf,&ErrorMsg);
     break;
   case Configuration::MM_UNDEF:
     throw std::logic_error("DPORDriver: No memory model is specified.");
@@ -409,6 +404,54 @@ DPORDriver::Result DPORDriver::run_rfsc_parallel() {
   return res;
 }
 
+template<class CausalTraceBuilder>
+DPORDriver::Result DPORDriver::run_causal_sequential() {
+  Result res;
+  std::unique_ptr<llvm::Module> mod = parse(PARSE_AND_CHECK);
+  RFSCDecisionTree decision_tree(make_scheduler(conf));
+  RFSCUnfoldingTree unfolding_tree;
+  CausalTraceBuilder TB(decision_tree, unfolding_tree, conf);
+
+  uint64_t computation_count = 0;
+  long double estimate = 1;
+  int tasks_left = 1;
+
+  do{
+    if(conf.print_progress){
+      print_progress(computation_count, estimate, res);
+    }
+
+    bool assume_blocked = false;
+    TB.reset();
+    Trace *t= this->run_once(TB, mod.get(), assume_blocked);
+    tasks_left--;
+
+    int to_create = TB.tasks_created;
+
+
+    tasks_left += to_create;
+
+    if (handle_trace(&TB, t, &computation_count, res, assume_blocked)) {
+      break;
+    }
+    if(conf.print_progress_estimate && (computation_count+1) % 100 == 0){
+      estimate = std::round(TB.estimate_trace_count());
+    }
+    if((computation_count+1) % 1000 == 0){
+      /* llvm::ExecutionEngine leaks global variables until the Module is
+       * destructed */
+      mod = parse();
+    }
+
+  } while(tasks_left);
+
+  if(conf.print_progress){
+    llvm::dbgs() << ESC_char << "[K\n";
+  }
+
+  return res;
+}
+
 DPORDriver::Result DPORDriver::run(){
   Result res;
   std::unique_ptr<llvm::Module> mod = parse(PARSE_AND_CHECK);
@@ -438,13 +481,9 @@ DPORDriver::Result DPORDriver::run(){
     TB = new ARMTraceBuilder(conf);
     break;
   case Configuration::CCV:
-    TB = new TSOTraceBuilder(conf);
-    break;
   case Configuration::CM:
-    TB = new TSOTraceBuilder(conf);
-    break;
   case Configuration::CC:
-    TB = new TSOTraceBuilder(conf);
+    return run_causal_sequential<CCTraceBuilder>();
     break;
   case Configuration::POWER:
     TB = new POWERTraceBuilder(conf);

@@ -30,6 +30,8 @@
 #include <vector>
 #include <deque>
 
+class CCTraceBuilder;
+
 class SaturatedGraph final {
 public:
   SaturatedGraph() = default;
@@ -54,6 +56,10 @@ public:
                  const std::vector<ExtID> &happens_after);
   /* Returns true if the graph is still acyclic. */
   bool saturate();
+
+  // custom saturation functions for memory models
+  friend class CCTraceBuilder;
+
   bool is_saturated() const { return wq_empty(); }
   bool has_event(ExtID id) const { return (extid_to_id.count(id) != 0); }
 

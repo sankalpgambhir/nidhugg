@@ -167,6 +167,11 @@ private:
    * if it should be run strictly sequential.
    */
   Result run_rfsc_sequential();
+  /* Template function for running any TraceBuilder 
+   * written per operational semantics, such as CCTraceBuilder
+   */
+  template<class CausalTraceBuilder>
+  Result run_causal_sequential();
 };
 
 #endif
