@@ -32,7 +32,7 @@
 
 class CCTraceBuilder;
 
-class SaturatedGraph final {
+class SaturatedGraph {
 public:
   SaturatedGraph() = default;
   SaturatedGraph(SaturatedGraph &&other) = default;
@@ -87,7 +87,7 @@ public:
     return SaturatedGraph(*this);
   };
 
-private:
+protected:
   explicit SaturatedGraph(const SaturatedGraph &other) = default;
 
   typedef unsigned ID;

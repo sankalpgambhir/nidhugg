@@ -35,8 +35,8 @@ static Timing::Context saturate_timing("saturate");
 static Timing::Context saturate1_timing("saturate_one");
 static Timing::Context saturate_loop_timing("saturate_loop");
 
-CCTraceBuilder::CCTraceBuilder(RFSCDecisionTree &desicion_tree_,
-                                   RFSCUnfoldingTree &unfolding_tree_,
+CCTraceBuilder::CCTraceBuilder(DecisionTree<CCGraph> &desicion_tree_,
+                                   UnfoldingTree &unfolding_tree_,
                                    const Configuration &conf)
     : TSOPSOTraceBuilder(conf),
       unfolding_tree(unfolding_tree_),
@@ -142,6 +142,11 @@ bool CCTraceBuilder::schedule(int *proc, int *aux, int *alt, bool *dryrun){
   }
 
  no_available_threads:
+  compute_vclocks();
+  compute_unfolding();
+    llvm::dbgs() << " === CCTraceBuilder state ===\n";
+    debug_print();
+    llvm::dbgs() << " ==============================\n";
   compute_prefixes();
 
   return false; // No available threads
@@ -841,8 +846,8 @@ void CCTraceBuilder::compute_unfolding() {
       deepest_node = last_decision;
     }
 
-    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> null_ptr;
-    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *parent;
+    const std::shared_ptr<UnfoldingTree::UnfoldingNode> null_ptr;
+    const std::shared_ptr<UnfoldingTree::UnfoldingNode> *parent;
     IID<IPid> iid = prefix[i].iid;
     IPid p = iid.get_pid();
     if (iid.get_index() == 1) {
@@ -855,7 +860,7 @@ void CCTraceBuilder::compute_unfolding() {
       prefix[i].event = *parent;
       continue;
     }
-    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
+    const std::shared_ptr<UnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
     if (prefix[i].read_from && *prefix[i].read_from != -1) {
       read_from = &prefix[*prefix[i].read_from].event;
     }
@@ -865,7 +870,7 @@ void CCTraceBuilder::compute_unfolding() {
 
     if (int(i) >= replay_point) {
       if (is_load(i)) {
-        const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &decision
+        const std::shared_ptr<UnfoldingTree::UnfoldingNode> &decision
         = is_lock_type(i) ? prefix[i].event : prefix[i].event->read_from;
         deepest_node = decision_tree.new_decision_node(std::move(deepest_node), decision);
         prefix[i].set_decision(deepest_node);
@@ -875,17 +880,17 @@ void CCTraceBuilder::compute_unfolding() {
   work_item = std::move(deepest_node);
 }
 
-std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> CCTraceBuilder::
+std::shared_ptr<UnfoldingTree::UnfoldingNode> CCTraceBuilder::
 unfold_find_unfolding_node(IPid p, int index, Option<int> prefix_rf) {
-  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> null_ptr;
-  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *parent;
+  const std::shared_ptr<UnfoldingTree::UnfoldingNode> null_ptr;
+  const std::shared_ptr<UnfoldingTree::UnfoldingNode> *parent;
   if (index == 1) {
     parent = &null_ptr;
   } else {
     int par_idx = find_process_event(p, index-1);
     parent = &prefix[par_idx].event;
   }
-  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
+  const std::shared_ptr<UnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
   if (prefix_rf && *prefix_rf != -1) {
     read_from = &prefix[*prefix_rf].event;
   }
@@ -894,10 +899,10 @@ unfold_find_unfolding_node(IPid p, int index, Option<int> prefix_rf) {
 }
 
 
-std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode>
+std::shared_ptr<UnfoldingTree::UnfoldingNode>
 CCTraceBuilder::unfold_alternative
-(unsigned i, const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &read_from) {
-  std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &parent
+(unsigned i, const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from) {
+  std::shared_ptr<UnfoldingTree::UnfoldingNode> &parent
     = prefix[i].event->parent;
   IPid p = prefix[i].iid.get_pid();
 
@@ -1157,9 +1162,9 @@ void CCTraceBuilder::compute_prefixes(){
   for (unsigned i = 0; i < prefix.size(); ++i) {
     auto try_swap = [&](int i, int j) {
         int original_read_from = *prefix[i].read_from;
-        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
           = unfold_alternative(j, prefix[i].event->read_from);
-        DecisionNode &decision = *prefix[i].decision_ptr;
+        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
         // Returns false if unfolding node is already known and therefore does not have to be further evaluated
         if (!decision.try_alloc_unf(alt)) return;
         if (!can_swap_by_vclocks(i, j)) return;
@@ -1173,6 +1178,9 @@ void CCTraceBuilder::compute_prefixes(){
 
         Leaf solution = try_sat({unsigned(j)}, writes_by_address);
         if (!solution.is_bottom()) {
+          if(conf.debug_print_on_reset){
+            llvm::dbgs() << "Solution found! Swapping!";
+          }
           decision_tree.construct_sibling(decision, std::move(alt),
                                           std::move(solution));
           tasks_created++;
@@ -1184,9 +1192,9 @@ void CCTraceBuilder::compute_prefixes(){
     auto try_swap_lock = [&](int i, int unlock, int j) {
         assert(does_lock(i) && is_unlock(unlock) && is_lock(j)
                && *prefix[j].read_from == int(unlock));
-        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
           = unfold_alternative(j, prefix[i].event->read_from);
-        DecisionNode &decision = *prefix[i].decision_ptr;
+        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
         if (!decision.try_alloc_unf(alt)) return;
         if (!can_swap_lock_by_vclocks(i, unlock, j)) return;
         int original_read_from = *prefix[i].read_from;
@@ -1210,9 +1218,9 @@ void CCTraceBuilder::compute_prefixes(){
     auto try_swap_blocked = [&](int i, IPid jp, SymEv sym) {
         int original_read_from = *prefix[i].read_from;
         auto jidx = threads[jp].last_event_index()+1;
-        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
           = unfold_find_unfolding_node(jp, jidx, original_read_from);
-        DecisionNode &decision = *prefix[i].decision_ptr;
+        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
         if (!decision.try_alloc_unf(alt)) return;
         int j = prefix_idx;
         assert(prefix_idx == int(prefix.size()));
@@ -1285,7 +1293,7 @@ void CCTraceBuilder::compute_prefixes(){
              [=](int i) { return i == original_read_from; })
            || original_read_from == -1);
 
-      DecisionNode &decision = *prefix[i].decision_ptr;
+      DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
 
       auto try_read_from_rmw = [&](int j) {
         Timing::Guard analysis_timing_guard(try_read_from_context);
@@ -1293,7 +1301,7 @@ void CCTraceBuilder::compute_prefixes(){
                && is_store_when_reading_from(j, original_read_from));
         /* Can only swap ajacent RMWs */
         if (*prefix[j].read_from != int(i)) return;
-        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> read_from
+        std::shared_ptr<UnfoldingTree::UnfoldingNode> read_from
           = unfold_alternative(j, prefix[i].event->read_from);
         if (!decision.try_alloc_unf(read_from)) return;
         if (!can_swap_by_vclocks(i, j)) return;
@@ -1326,7 +1334,7 @@ void CCTraceBuilder::compute_prefixes(){
           /* RMW pair */
           try_read_from_rmw(j);
         } else {
-          const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &read_from =
+          const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from =
             j == -1 ? nullptr : prefix[j].event;
           if (!decision.try_alloc_unf(read_from)) return;
           if (!can_rf_by_vclocks(i, original_read_from, j)) return;
@@ -1339,6 +1347,9 @@ void CCTraceBuilder::compute_prefixes(){
 
           Leaf solution = try_sat({i}, writes_by_address);
           if (!solution.is_bottom()) {
+            if(conf.debug_print_on_reset){
+              llvm::dbgs() << "Solution found! Swapping!";
+            }
             decision_tree.construct_sibling(decision, read_from, std::move(solution));
             tasks_created++;
           }
@@ -1423,7 +1434,7 @@ void CCTraceBuilder::add_event_to_graph(SaturatedGraph &g, unsigned i) const {
 }
 
 const SaturatedGraph &CCTraceBuilder::get_cached_graph
-(DecisionNode &decision) {
+(DecisionNode<CCGraph> &decision) {
   const int depth = decision.depth;
   return decision.get_saturated_graph(
     [depth, this](SaturatedGraph &g) {
@@ -1522,7 +1533,7 @@ CCTraceBuilder::try_sat
  std::map<SymAddr,std::vector<int>> &writes_by_address){
   Timing::Guard timing_guard(graph_context);
   unsigned last_change = changed_events.end()[-1];
-  DecisionNode &decision = *prefix[last_change].decision_ptr;
+  DecisionNode<CCGraph> &decision = *prefix[last_change].decision_ptr;
   int decision_depth = decision.depth;
   std::vector<bool> keep = causal_past(decision_depth);
 
@@ -1540,19 +1551,14 @@ CCTraceBuilder::try_sat
   }
   std::vector<IID<int>> current_exec
     = map(prefix, [](const Event &e) { return e.iid; });
-
-  std::vector<IID<int>> ids;
-  for (IID<int> iid : current_exec)
-    if (g.has_event(iid))
-      ids.push_back(iid);
-
   /* We need to preserve g */
-  if (Option<std::vector<IID<int>>> res = toposort(std::move(g), std::move(ids))) {
+  if (Option<std::vector<IID<int>>> res
+      = try_generate_prefix(std::move(g), std::move(current_exec))) {
     if (conf.debug_print_on_reset) {
       llvm::dbgs() << ": Found prefix by toposort:\n";
       llvm::dbgs() << "[";
       for (IID<int> iid : *res) {
-        llvm::dbgs() << iid_string(iid) << ",";
+        llvm::dbgs() << iid_string(iid) << ",\n";
       }
       llvm::dbgs() << "]\n";
     }
@@ -1563,6 +1569,7 @@ CCTraceBuilder::try_sat
   }
 
   assert(false && "Failed toposort");
+  return Leaf();
 }
 
 Leaf CCTraceBuilder::order_to_leaf
