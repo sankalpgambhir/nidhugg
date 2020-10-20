@@ -160,7 +160,7 @@ struct Scheduler {
 };
 
 template <class Graph>
-class PriorityQueueScheduler final : public Scheduler {
+class PriorityQueueScheduler final : public Scheduler<Graph> {
 public:
   PriorityQueueScheduler();
   ~PriorityQueueScheduler() override = default;
@@ -177,11 +177,11 @@ private:
 
   /* Work queue of leaf nodes to explore.
    * The ordering is determined by DecisionCompare. */
-  std::priority_queue<std::shared_ptr<DecisionNode>, std::vector<std::shared_ptr<DecisionNode>>, DecisionCompare> work_queue;
+  std::priority_queue<std::shared_ptr<DecisionNode<Graph>>, std::vector<std::shared_ptr<DecisionNode<Graph>>>, DecisionCompare<Graph>> work_queue;
 };
 
 template <class Graph>
-class WorkstealingPQScheduler final : public Scheduler {
+class WorkstealingPQScheduler final : public Scheduler<Graph> {
 public:
   WorkstealingPQScheduler(unsigned num_threads);
   ~WorkstealingPQScheduler() override = default;
@@ -195,7 +195,7 @@ public:
 
 private:
   class alignas(64) ThreadWorkQueue {
-    std::map<int,std::deque<std::shared_ptr<DecisionNode>>> queue;
+    std::map<int,std::deque<std::shared_ptr<DecisionNode<Graph>>>> queue;
   public:
     void push(std::shared_ptr<DecisionNode<Graph> > ptr) {
       assert(ptr);
@@ -217,7 +217,7 @@ private:
 template <class Graph>
 class DecisionTree final {
 public:
-  RFSCDecisionTree(std::unique_ptr<Scheduler> scheduler)
+  DecisionTree(std::unique_ptr<Scheduler<Graph> > scheduler)
     : scheduler(std::move(scheduler)) {
     // Initiallize the work_queue with a "root"-node
     this->scheduler->enqueue(std::make_shared<DecisionNode<Graph> >());

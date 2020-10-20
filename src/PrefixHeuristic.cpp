@@ -82,11 +82,11 @@ try_generate_prefix(SaturatedGraph g, std::vector<IID<int>> current_exec) {
     }
     total_co[a].insert(ins_ptr, w);
 
-    if (!g.saturate()) {
-      std::ofstream out("cycle.dot");
-      g.print_graph(out);
-      return nullptr;
-    }
+    // if (!g.saturate()) {
+    //   std::ofstream out("cycle.dot");
+    //   g.print_graph(out);
+    //   return nullptr;
+    // }
   }
 
   // {

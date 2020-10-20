@@ -488,7 +488,7 @@ void SaturatedGraph::reverse_saturate() {
             if (r == pe_id) continue; /* RMW */
             IFTRACE(std::cerr << "Adding missed from-read from " << r << " to " << pe_id << "\n");
             /* Optimisation opportunity */
-            add_edge_internal(r, pe_id);
+            //add_edge_internal(r, pe_id);
           }
         }
       }

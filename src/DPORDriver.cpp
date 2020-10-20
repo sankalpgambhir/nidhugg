@@ -408,8 +408,8 @@ template<class CausalTraceBuilder>
 DPORDriver::Result DPORDriver::run_causal_sequential() {
   Result res;
   std::unique_ptr<llvm::Module> mod = parse(PARSE_AND_CHECK);
-  RFSCDecisionTree decision_tree(make_scheduler(conf));
-  RFSCUnfoldingTree unfolding_tree;
+  DecisionTree<> decision_tree(make_scheduler(conf));
+  UnfoldingTree unfolding_tree;
   CausalTraceBuilder TB(decision_tree, unfolding_tree, conf);
 
   uint64_t computation_count = 0;

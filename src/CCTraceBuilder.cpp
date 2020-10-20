@@ -142,11 +142,6 @@ bool CCTraceBuilder::schedule(int *proc, int *aux, int *alt, bool *dryrun){
   }
 
  no_available_threads:
-  compute_vclocks();
-  compute_unfolding();
-    llvm::dbgs() << " === CCTraceBuilder state ===\n";
-    debug_print();
-    llvm::dbgs() << " ==============================\n";
   compute_prefixes();
 
   return false; // No available threads
@@ -418,6 +413,9 @@ void CCTraceBuilder::load(const SymAddrSize &ml){
 void CCTraceBuilder::do_load(const SymAddrSize &ml){
   curev().may_conflict = true;
   int lu = mem[ml.addr].last_update;
+  if(replay){
+    llvm::dbgs() << "HIYAS " << curev().read_from.value_or(-3) << " " << lu;
+  }
   curev().read_from = lu;
 
   assert(lu == -1 || get_addr(lu) == ml);
@@ -1416,7 +1414,7 @@ template<typename T, typename F> auto map(const std::vector<T> &vec, F f)
   return ret;
 }
 
-void CCTraceBuilder::add_event_to_graph(SaturatedGraph &g, unsigned i) const {
+void CCTraceBuilder::add_event_to_graph(CCGraph &g, unsigned i) const {
   SaturatedGraph::EventKind kind = SaturatedGraph::NONE;
   SymAddr addr;
   if (is_load(i)) {
@@ -1433,11 +1431,11 @@ void CCTraceBuilder::add_event_to_graph(SaturatedGraph &g, unsigned i) const {
                              [this](unsigned j){return prefix[j].iid;}));
 }
 
-const SaturatedGraph &CCTraceBuilder::get_cached_graph
+const CCTraceBuilder::CCGraph &CCTraceBuilder::get_cached_graph
 (DecisionNode<CCGraph> &decision) {
   const int depth = decision.depth;
   return decision.get_saturated_graph(
-    [depth, this](SaturatedGraph &g) {
+    [depth, this](CCGraph &g) {
       std::vector<bool> keep = causal_past(depth-1);
       for (unsigned i = 0; i < prefix.size(); ++i) {
         if (keep[i] && !g.has_event(prefix[i].iid)) {
@@ -1445,86 +1443,9 @@ const SaturatedGraph &CCTraceBuilder::get_cached_graph
         }
       }
 
-      IFDEBUG(bool g_acyclic = ) this->saturate_graph(g);
+      IFDEBUG(bool g_acyclic = ) g.saturate();
       assert(g_acyclic);
     });
-}
-
-bool CCTraceBuilder::saturate_graph(SaturatedGraph &g){
-  Timing::Guard saturate_guard(saturate_timing);
-  g.check_graph_consistency();
-  //g.reverse_saturate();
-  g.saturated_until = g.events.size();
-  std::vector<std::pair<SaturatedGraph::ID,SaturatedGraph::ID>> new_edges;
-
-  while (!g.wq_empty()) {
-    Timing::Guard saturate1_guard(saturate1_timing);
-    const SaturatedGraph::ID id = g.wq_pop();
-    bool new_in = false;
-    assert(id < g.events.size());
-    new_edges.clear();
-    {
-      SaturatedGraph::Event e = g.events[id];
-      const SaturatedGraph::edge_vector &old_in = g.ins[id];
-      SaturatedGraph::VC vc = g.recompute_vc_for_event(e, old_in);
-      const SaturatedGraph::VC &old_vc = g.vclocks[id];
-      if (g.is_in_cycle(e, old_in, vc)) {
-        IFTRACE(std::cerr << "Cycle found\n");
-        g.check_graph_consistency();
-        return false;
-      }
-      if (vc == old_vc) {
-        IFTRACE(std::cerr << id << " unchanged\n");
-        continue;
-      }
-      /* Saturation logic */
-      if (e.is_load || e.is_store) {
-        for (unsigned pid = 0; pid < unsigned(vc.size_ub()); ++pid) {
-          if (old_vc[pid] == vc[pid]) continue;
-          assert(old_vc[pid] < vc[pid]);
-          Timing::Guard saturate_loop_guard(saturate_loop_timing);
-          const gen::vector<SaturatedGraph::ID> &writes
-            = g.writes_by_process_and_address[pid][e.addr];
-          unsigned last_visible_id = vc[pid];
-          SaturatedGraph::ID last_visible = g.get_process_event(pid, last_visible_id);
-          auto ub = std::upper_bound(writes.begin(), writes.end(),
-                                     last_visible);
-          if (ub == writes.begin()) continue;
-          else --ub;
-          /* We cannot read ourselves */
-          if (*ub == id) {
-            if (ub == writes.begin()) continue;
-            else --ub;
-          }
-          const SaturatedGraph::ID pe_id = *ub;
-          const SaturatedGraph::Event &pe = g.events[pe_id];
-          assert(pe_id != id);
-          if (pe.iid.get_index() <= old_vc[pid]) continue;
-          assert(pe.iid.get_index() <= vc[pid]);
-
-          if (e.is_load) {
-            if (!e.read_from) {
-              /* pe must happen after us since we're loading from
-               * init. Cycle detected.
-               */
-              IFTRACE(std::cerr << "Cycle found\n");
-              g.check_graph_consistency();
-              return false;
-            }
-          }
-        }
-      }
-
-      g.add_successors_to_wq(id, e);
-      IFTRACE(std::cerr << "Updating " << id << ": " << vc << "\n");
-      g.vclocks.mut(id) = std::move(vc);
-    }
-    if (new_in) g.wq_add_first(id);
-    g.add_edges(new_edges);
-  }
-  g.wq_set.clear();
-  g.check_graph_consistency();
-  return true;
 }
 
 Leaf
@@ -1537,14 +1458,14 @@ CCTraceBuilder::try_sat
   int decision_depth = decision.depth;
   std::vector<bool> keep = causal_past(decision_depth);
 
-  SaturatedGraph g(get_cached_graph(decision).clone());
+  CCGraph g(get_cached_graph(decision).clone());
   for (unsigned i = 0; i < prefix.size(); ++i) {
     if (keep[i] && i != last_change && !g.has_event(prefix[i].iid)) {
       add_event_to_graph(g, i);
     }
   }
   add_event_to_graph(g, last_change);
-  if (!saturate_graph(g)) {
+  if (!g.saturate()) {
     if (conf.debug_print_on_reset)
       llvm::dbgs() << ": Saturation yielded cycle\n";
     return Leaf();
@@ -1690,6 +1611,11 @@ long double CCTraceBuilder::estimate_trace_count(int idx) const{
   }
 
   return count;
+}
+
+bool CCTraceBuilder::CCGraph::saturate(){
+
+  return false;
 }
 
 

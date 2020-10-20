@@ -1542,6 +1542,8 @@ RFSCTraceBuilder::try_sat
     return order_to_leaf(decision_depth, changed_events, std::move(order));
   }
 
+  assert(false && "Tried sat");
+
   std::unique_ptr<SatSolver> sat = conf.get_sat_solver();
   {
     Timing::Guard timing_guard(sat_context);

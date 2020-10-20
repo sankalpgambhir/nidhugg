@@ -18,8 +18,25 @@
 
 class CCTraceBuilder final : public TSOPSOTraceBuilder{
 public:
-  /* forward declaration */
-  class CCGraph;
+
+  class CCGraph : public SaturatedGraph{
+
+    public:
+    /* Custom saturation function
+    * Performs trivial saturation in the case of CC
+    */
+    bool saturate();
+
+    /* Clone this graph. This graph becomes read-only at this point, and must
+    * outlive the clone and any decendents of it.
+    */
+    CCGraph clone() const {
+      /* Not strictly necessary, but an assumption that informed the choice of
+      * queue data structures */
+      assert(wq_empty());
+      return CCGraph(*this);
+    };
+  };
 
   CCTraceBuilder(DecisionTree<CCGraph> &desicion_tree_,
                    UnfoldingTree &unfolding_tree_,
@@ -72,11 +89,6 @@ public:
 
   /* Active work item, signifies the leaf of an exploration.*/
   std::shared_ptr<DecisionNode<CCGraph>  > work_item;
-  
-  /* Custom saturation function specific to CC
-   * Performs trivial saturation
-   */
-  bool saturate_graph(SaturatedGraph& g);
 
 protected:
   /* An identifier for a thread. An index into this->threads.
@@ -422,16 +434,12 @@ protected:
   (unsigned i, const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from);
   // END TODO
 
-  class CCGraph : public SaturatedGraph{
-
-  };
-
-  void add_event_to_graph(SaturatedGraph &g, unsigned i) const;
+  void add_event_to_graph(CCGraph &g, unsigned i) const;
   /* Access a SaturatedGraph from a DecisionNode.
    * This has the risk of mutating a graph which is accessed by
    * multiple threads concurrently. therefore need to be under exclusive opreation.
    */
-  const SaturatedGraph &get_cached_graph(DecisionNode<CCGraph>   &decision);
+  const CCGraph &get_cached_graph(DecisionNode<CCGraph>   &decision);
   /* Perform planning of future executions. Requires the trace to be
    * maximal or sleepset blocked, and that the vector clocks have been
    * computed.
