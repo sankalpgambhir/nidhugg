@@ -1,3 +1,22 @@
+/* Copyright (C) 2018 Magnus Lång and Tuan Phong Ngo
+ *
+ * This file is part of Nidhugg.
+ *
+ * Nidhugg is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Nidhugg is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ */
+
 #include <config.h>
 #ifndef __CC_TRACE_BUILDER_H__
 #define __CC_TRACE_BUILDER_H__
@@ -8,38 +27,18 @@
 #include "WakeupTrees.h"
 #include "Option.h"
 #include "SaturatedGraph.h"
-#include "UnfoldingTree.h"
-#include "DecisionTree.h"
+#include "RFSCUnfoldingTree.h"
+#include "RFSCDecisionTree.h"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <boost/container/flat_map.hpp>
 
 
-class CCTraceBuilder final : public TSOPSOTraceBuilder{
+class CCTraceBuilder : public TSOPSOTraceBuilder{
 public:
-
-  class CCGraph : public SaturatedGraph{
-
-    public:
-    /* Custom saturation function
-    * Performs trivial saturation in the case of CC
-    */
-    bool saturate();
-
-    /* Clone this graph. This graph becomes read-only at this point, and must
-    * outlive the clone and any decendents of it.
-    */
-    CCGraph clone() const {
-      /* Not strictly necessary, but an assumption that informed the choice of
-      * queue data structures */
-      assert(wq_empty());
-      return CCGraph(*this);
-    };
-  };
-
-  CCTraceBuilder(DecisionTree<CCGraph> &desicion_tree_,
-                   UnfoldingTree &unfolding_tree_,
+  CCTraceBuilder(RFSCDecisionTree &desicion_tree_,
+                   RFSCUnfoldingTree &unfolding_tree_,
                    const Configuration &conf = Configuration::default_conf);
   virtual ~CCTraceBuilder();
   virtual bool schedule(int *proc, int *aux, int *alt, bool *dryrun);
@@ -83,12 +82,11 @@ public:
   virtual void register_alternatives(int alt_count);
   virtual long double estimate_trace_count() const;
 
-
   /* Amount of siblings found during compute_prefixes. */
   int tasks_created;
 
   /* Active work item, signifies the leaf of an exploration.*/
-  std::shared_ptr<DecisionNode<CCGraph>  > work_item;
+  std::shared_ptr<DecisionNode> work_item;
 
 protected:
   /* An identifier for a thread. An index into this->threads.
@@ -144,7 +142,7 @@ protected:
     int last_event_index() const { return event_indices.size(); }
   };
 
-  UnfoldingTree &unfolding_tree;
+  RFSCUnfoldingTree &unfolding_tree;
 
   /* The threads in the current execution, in the order they were
    * created. Threads on even indexes are real, threads on odd indexes
@@ -152,10 +150,6 @@ protected:
    * index i-1.
    */
   std::vector<Thread> threads;
-  // Arbitration/Coherence Order maintained by a thread/site
-  std::map<IPid, std::vector<unsigned>> thread_coherence;
-  // Arbitration/Coherence Orders for writes on each address
-  std::map<SymAddr, std::vector<unsigned>> var_coherence;
 
   Option<unsigned> po_predecessor(unsigned i) const{
     if (prefix[i].iid.get_index() == 1) return nullptr;
@@ -274,7 +268,7 @@ protected:
     bool may_conflict;
 
     /* The unfolding event corresponding to this executed event. */
-    std::shared_ptr<UnfoldingTree::UnfoldingNode> event;
+    std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> event;
 
     Option<int> read_from;
     /* Symbolic representation of the globally visible operation of this event.
@@ -290,18 +284,18 @@ protected:
     int sleep_branch_trace_count;
 
     /* Pointer to the corresponing DecisionNode. */
-    std::shared_ptr<DecisionNode<CCGraph>  > decision_ptr;
+    std::shared_ptr<DecisionNode> decision_ptr;
 
     int get_decision_depth() const {
       return decision_depth;
     };
-    void set_decision(std::shared_ptr<DecisionNode<CCGraph>  > decision) {
+    void set_decision(std::shared_ptr<DecisionNode> decision) {
       decision_ptr = std::move(decision);
       decision_depth = decision_ptr ? decision_ptr->depth : -1;
     };
-    void set_branch_decision(int decision, const std::shared_ptr<DecisionNode<CCGraph>  > &work_item) {
+    void set_branch_decision(int decision, const std::shared_ptr<DecisionNode> &work_item) {
       decision_depth = decision;
-      decision_ptr = decision == -1 ? nullptr : DecisionTree<CCGraph>::find_ancestor(work_item, decision_depth);
+      decision_ptr = decision == -1 ? nullptr : RFSCDecisionTree::find_ancestor(work_item, decision_depth);
     };
 
     void decision_swap(Event &e) {
@@ -326,7 +320,7 @@ protected:
    * to construct new witnesses during compute_prefix or
    * retrieving new work items for execution.
    */
-  DecisionTree<CCGraph> &decision_tree;
+  RFSCDecisionTree &decision_tree;
 
   /* The index into prefix corresponding to the last event that was
    * scheduled. Has the value -1 when no events have been scheduled.
@@ -428,18 +422,18 @@ protected:
 
   // TODO: Refactor RFSCUnfoldingTree and and deprecate these methods.
   // Workaround due to require access to parent while not having a root-node
-  std::shared_ptr<UnfoldingTree::UnfoldingNode> unfold_find_unfolding_node
+  std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> unfold_find_unfolding_node
   (IPid pid, int index, Option<int> read_from);
-  std::shared_ptr<UnfoldingTree::UnfoldingNode> unfold_alternative
-  (unsigned i, const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from);
+  std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> unfold_alternative
+  (unsigned i, const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &read_from);
   // END TODO
 
-  void add_event_to_graph(CCGraph &g, unsigned i) const;
+  void add_event_to_graph(SaturatedGraph &g, unsigned i) const;
   /* Access a SaturatedGraph from a DecisionNode.
    * This has the risk of mutating a graph which is accessed by
    * multiple threads concurrently. therefore need to be under exclusive opreation.
    */
-  const CCGraph &get_cached_graph(DecisionNode<CCGraph>   &decision);
+  const SaturatedGraph &get_cached_graph(DecisionNode &decision);
   /* Perform planning of future executions. Requires the trace to be
    * maximal or sleepset blocked, and that the vector clocks have been
    * computed.

@@ -1,3 +1,22 @@
+/* Copyright (C) 2018 Magnus Lång and Tuan Phong Ngo
+ *
+ * This file is part of Nidhugg.
+ *
+ * Nidhugg is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Nidhugg is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ */
+
 #include "Debug.h"
 #include "CCTraceBuilder.h"
 #include "PrefixHeuristic.h"
@@ -6,13 +25,6 @@
 
 #include <sstream>
 #include <stdexcept>
-#include <iostream>
-
-#ifdef TRACE
-#  define IFTRACE(X) X
-#else
-#  define IFTRACE(X) ((void)0)
-#endif
 
 #define ANSIRed "\x1b[91m"
 #define ANSIRst "\x1b[m"
@@ -31,12 +43,9 @@ static Timing::Context try_read_from_context("try_read_from");
 static Timing::Context ponder_mutex_context("ponder_mutex");
 static Timing::Context graph_context("graph");
 static Timing::Context sat_context("sat");
-static Timing::Context saturate_timing("saturate");
-static Timing::Context saturate1_timing("saturate_one");
-static Timing::Context saturate_loop_timing("saturate_loop");
 
-CCTraceBuilder::CCTraceBuilder(DecisionTree<CCGraph> &desicion_tree_,
-                                   UnfoldingTree &unfolding_tree_,
+CCTraceBuilder::CCTraceBuilder(RFSCDecisionTree &desicion_tree_,
+                                   RFSCUnfoldingTree &unfolding_tree_,
                                    const Configuration &conf)
     : TSOPSOTraceBuilder(conf),
       unfolding_tree(unfolding_tree_),
@@ -63,7 +72,7 @@ bool CCTraceBuilder::schedule(int *proc, int *aux, int *alt, bool *dryrun){
   }
   *dryrun = false;
   *alt = 0;
-  *aux = -1; /* No auxilliary threads in our memory model */
+  *aux = -1; /* No auxilliary threads in SC */
   if(replay){
     /* Are we done with the current Event? */
     if (0 <= prefix_idx && threads[curev().iid.get_pid()].last_event_index() <
@@ -193,7 +202,7 @@ void CCTraceBuilder::metadata(const llvm::MDNode *md){
 }
 
 bool CCTraceBuilder::sleepset_is_empty() const{
-  return true; // we do not use sleep set
+  return true;
 }
 
 Trace *CCTraceBuilder::get_trace() const{
@@ -208,7 +217,7 @@ Trace *CCTraceBuilder::get_trace() const{
     errs.push_back(errors[i]->clone());
   }
   Trace *t = new IIDSeqTrace(cmp,cmp_md.build(),errs);
-  t->set_blocked(!sleepset_is_empty()); // no sleep set, never sleep blocked
+  t->set_blocked(!sleepset_is_empty());
   return t;
 }
 
@@ -413,9 +422,6 @@ void CCTraceBuilder::load(const SymAddrSize &ml){
 void CCTraceBuilder::do_load(const SymAddrSize &ml){
   curev().may_conflict = true;
   int lu = mem[ml.addr].last_update;
-  if(replay){
-    llvm::dbgs() << "HIYAS " << curev().read_from.value_or(-3) << " " << lu;
-  }
   curev().read_from = lu;
 
   assert(lu == -1 || get_addr(lu) == ml);
@@ -441,6 +447,15 @@ void CCTraceBuilder::full_memory_conflict(){
   abort();
   record_symbolic(SymEv::Fullmem());
   curev().may_conflict = true;
+
+  // /* See all pervious memory accesses */
+  // for(auto it = mem.begin(); it != mem.end(); ++it){
+  //   do_load(it->second);
+  // }
+  // last_full_memory_conflict = prefix_idx;
+
+  // /* No later access can have a conflict with any earlier access */
+  // mem.clear();
 }
 
 void CCTraceBuilder::fence(){
@@ -724,7 +739,7 @@ void CCTraceBuilder::add_happens_after(unsigned second, unsigned first){
   assert((long long)second <= prefix_idx);
 
   std::vector<unsigned> &vec = prefix[second].happens_after;
-  if (vec.size() && vec.back() == first) return;  // find instead of back?
+  if (vec.size() && vec.back() == first) return;
 
   vec.push_back(first);
 }
@@ -825,7 +840,7 @@ void CCTraceBuilder::compute_vclocks(){
   for (unsigned i = prefix.size();;) {
     if (i == 0) break;
     auto clock = below_clocks[--i];
-    auto &e = prefix[i];
+    Event &e = prefix[i];
     clock[e.iid.get_pid()] = e.iid.get_index();
     for (unsigned j : happens_after[i]) {
       assert (i < j);
@@ -844,8 +859,8 @@ void CCTraceBuilder::compute_unfolding() {
       deepest_node = last_decision;
     }
 
-    const std::shared_ptr<UnfoldingTree::UnfoldingNode> null_ptr;
-    const std::shared_ptr<UnfoldingTree::UnfoldingNode> *parent;
+    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> null_ptr;
+    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *parent;
     IID<IPid> iid = prefix[i].iid;
     IPid p = iid.get_pid();
     if (iid.get_index() == 1) {
@@ -858,7 +873,7 @@ void CCTraceBuilder::compute_unfolding() {
       prefix[i].event = *parent;
       continue;
     }
-    const std::shared_ptr<UnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
+    const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
     if (prefix[i].read_from && *prefix[i].read_from != -1) {
       read_from = &prefix[*prefix[i].read_from].event;
     }
@@ -868,7 +883,7 @@ void CCTraceBuilder::compute_unfolding() {
 
     if (int(i) >= replay_point) {
       if (is_load(i)) {
-        const std::shared_ptr<UnfoldingTree::UnfoldingNode> &decision
+        const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &decision
         = is_lock_type(i) ? prefix[i].event : prefix[i].event->read_from;
         deepest_node = decision_tree.new_decision_node(std::move(deepest_node), decision);
         prefix[i].set_decision(deepest_node);
@@ -878,17 +893,17 @@ void CCTraceBuilder::compute_unfolding() {
   work_item = std::move(deepest_node);
 }
 
-std::shared_ptr<UnfoldingTree::UnfoldingNode> CCTraceBuilder::
+std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> CCTraceBuilder::
 unfold_find_unfolding_node(IPid p, int index, Option<int> prefix_rf) {
-  const std::shared_ptr<UnfoldingTree::UnfoldingNode> null_ptr;
-  const std::shared_ptr<UnfoldingTree::UnfoldingNode> *parent;
+  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> null_ptr;
+  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *parent;
   if (index == 1) {
     parent = &null_ptr;
   } else {
     int par_idx = find_process_event(p, index-1);
     parent = &prefix[par_idx].event;
   }
-  const std::shared_ptr<UnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
+  const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> *read_from = &null_ptr;
   if (prefix_rf && *prefix_rf != -1) {
     read_from = &prefix[*prefix_rf].event;
   }
@@ -897,10 +912,10 @@ unfold_find_unfolding_node(IPid p, int index, Option<int> prefix_rf) {
 }
 
 
-std::shared_ptr<UnfoldingTree::UnfoldingNode>
+std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode>
 CCTraceBuilder::unfold_alternative
-(unsigned i, const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from) {
-  std::shared_ptr<UnfoldingTree::UnfoldingNode> &parent
+(unsigned i, const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &read_from) {
+  std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &parent
     = prefix[i].event->parent;
   IPid p = prefix[i].iid.get_pid();
 
@@ -1018,7 +1033,7 @@ static std::ptrdiff_t delete_from_back(std::vector<int> &vec, int val) {
 }
 
 CCTraceBuilder::CmpXhgUndoLog CCTraceBuilder::
-recompute_cmpxhg_success(unsigned idx, std::vector<int> &writes) { // TOCOPY
+recompute_cmpxhg_success(unsigned idx, std::vector<int> &writes) {
   auto kind = CmpXhgUndoLog::NONE;
   SymEv &e =  prefix[idx].sym;
   if (e.kind == SymEv::M_TRYLOCK || e.kind == SymEv::M_TRYLOCK_FAIL) {
@@ -1122,10 +1137,10 @@ bool CCTraceBuilder::can_swap_lock_by_vclocks(int f, int u, int s) const {
   return true;
 }
 
-void CCTraceBuilder::compute_prefixes(){
+void CCTraceBuilder::compute_prefixes() {
   Timing::Guard analysis_timing_guard(analysis_context);
-
   compute_vclocks();
+
   compute_unfolding();
 
   if(conf.debug_print_on_reset){
@@ -1156,13 +1171,16 @@ void CCTraceBuilder::compute_prefixes(){
         .push_back(j);
     if (is_cmpxhgfail(j)) cmpxhgfail_by_address[get_addr(j).addr].push_back(j);
   }
+  // for (std::pair<SymAddr,std::vector<int>> &pair : writes_by_address) {
+  //   pair.second.push_back(-1);
+  // }
 
   for (unsigned i = 0; i < prefix.size(); ++i) {
     auto try_swap = [&](int i, int j) {
         int original_read_from = *prefix[i].read_from;
-        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
           = unfold_alternative(j, prefix[i].event->read_from);
-        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
+        DecisionNode &decision = *prefix[i].decision_ptr;
         // Returns false if unfolding node is already known and therefore does not have to be further evaluated
         if (!decision.try_alloc_unf(alt)) return;
         if (!can_swap_by_vclocks(i, j)) return;
@@ -1176,9 +1194,6 @@ void CCTraceBuilder::compute_prefixes(){
 
         Leaf solution = try_sat({unsigned(j)}, writes_by_address);
         if (!solution.is_bottom()) {
-          if(conf.debug_print_on_reset){
-            llvm::dbgs() << "Solution found! Swapping!";
-          }
           decision_tree.construct_sibling(decision, std::move(alt),
                                           std::move(solution));
           tasks_created++;
@@ -1190,9 +1205,9 @@ void CCTraceBuilder::compute_prefixes(){
     auto try_swap_lock = [&](int i, int unlock, int j) {
         assert(does_lock(i) && is_unlock(unlock) && is_lock(j)
                && *prefix[j].read_from == int(unlock));
-        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
           = unfold_alternative(j, prefix[i].event->read_from);
-        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
+        DecisionNode &decision = *prefix[i].decision_ptr;
         if (!decision.try_alloc_unf(alt)) return;
         if (!can_swap_lock_by_vclocks(i, unlock, j)) return;
         int original_read_from = *prefix[i].read_from;
@@ -1216,9 +1231,9 @@ void CCTraceBuilder::compute_prefixes(){
     auto try_swap_blocked = [&](int i, IPid jp, SymEv sym) {
         int original_read_from = *prefix[i].read_from;
         auto jidx = threads[jp].last_event_index()+1;
-        std::shared_ptr<UnfoldingTree::UnfoldingNode> alt
+        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> alt
           = unfold_find_unfolding_node(jp, jidx, original_read_from);
-        DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
+        DecisionNode &decision = *prefix[i].decision_ptr;
         if (!decision.try_alloc_unf(alt)) return;
         int j = prefix_idx;
         assert(prefix_idx == int(prefix.size()));
@@ -1253,7 +1268,6 @@ void CCTraceBuilder::compute_prefixes(){
         threads[jp].event_indices.pop_back();
         prefix.pop_back();
       };
-      
     if (!prefix[i].pinned && is_lock_type(i)) {
       Timing::Guard ponder_mutex_guard(ponder_mutex_context);
       auto addr = get_addr(i);
@@ -1291,7 +1305,7 @@ void CCTraceBuilder::compute_prefixes(){
              [=](int i) { return i == original_read_from; })
            || original_read_from == -1);
 
-      DecisionNode<CCGraph> &decision = *prefix[i].decision_ptr;
+      DecisionNode &decision = *prefix[i].decision_ptr;
 
       auto try_read_from_rmw = [&](int j) {
         Timing::Guard analysis_timing_guard(try_read_from_context);
@@ -1299,7 +1313,7 @@ void CCTraceBuilder::compute_prefixes(){
                && is_store_when_reading_from(j, original_read_from));
         /* Can only swap ajacent RMWs */
         if (*prefix[j].read_from != int(i)) return;
-        std::shared_ptr<UnfoldingTree::UnfoldingNode> read_from
+        std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> read_from
           = unfold_alternative(j, prefix[i].event->read_from);
         if (!decision.try_alloc_unf(read_from)) return;
         if (!can_swap_by_vclocks(i, j)) return;
@@ -1332,7 +1346,7 @@ void CCTraceBuilder::compute_prefixes(){
           /* RMW pair */
           try_read_from_rmw(j);
         } else {
-          const std::shared_ptr<UnfoldingTree::UnfoldingNode> &read_from =
+          const std::shared_ptr<RFSCUnfoldingTree::UnfoldingNode> &read_from =
             j == -1 ? nullptr : prefix[j].event;
           if (!decision.try_alloc_unf(read_from)) return;
           if (!can_rf_by_vclocks(i, original_read_from, j)) return;
@@ -1345,9 +1359,6 @@ void CCTraceBuilder::compute_prefixes(){
 
           Leaf solution = try_sat({i}, writes_by_address);
           if (!solution.is_bottom()) {
-            if(conf.debug_print_on_reset){
-              llvm::dbgs() << "Solution found! Swapping!";
-            }
             decision_tree.construct_sibling(decision, read_from, std::move(solution));
             tasks_created++;
           }
@@ -1396,14 +1407,56 @@ void CCTraceBuilder::compute_prefixes(){
       prefix[i].read_from = original_read_from;
     }
   }
-
 }
 
 void CCTraceBuilder::output_formula
 (SatSolver &sat,
  std::map<SymAddr,std::vector<int>> &writes_by_address,
  const std::vector<bool> &keep){
-  return; // not needed for cc
+  unsigned no_keep = 0;
+  std::vector<unsigned> var;
+  for (unsigned i = 0; i < prefix.size(); ++i) {
+    var.push_back(no_keep);
+    if (keep[i]) no_keep++;
+  }
+
+  sat.alloc_variables(no_keep);
+  /* PO */
+  for (unsigned i = 0; i < prefix.size(); ++i) {
+    if (!keep[i]) continue;
+    if (Option<unsigned> pred = po_predecessor(i)) {
+      assert(*pred != i);
+      sat.add_edge(var[*pred], var[i]);
+    }
+  }
+
+  /* Read-from and SC consistency */
+  for (unsigned r = 0; r < prefix.size(); ++r) {
+    if (!keep[r] || !prefix[r].read_from) continue;
+    int w = *prefix[r].read_from;
+    assert(int(r) != w);
+    if (w == -1) {
+      for (int j : writes_by_address[get_addr(r).addr]) {
+        if (j == int(r) || !keep[j]) continue;
+        sat.add_edge(var[r], var[j]);
+      }
+    } else {
+      sat.add_edge(var[w], var[r]);
+      for (int j : writes_by_address[get_addr(r).addr]) {
+        if (j == w || j == int(r) || !keep[j]) continue;
+        sat.add_edge_disj(var[j], var[w],
+                          var[r], var[j]);
+      }
+    }
+  }
+
+  /* Other happens-after edges (such as thread spawn and join) */
+  for (unsigned i = 0; i < prefix.size(); ++i) {
+    if (!keep[i]) continue;
+    for (unsigned j : prefix[i].happens_after) {
+      sat.add_edge(var[j], var[i]);
+    }
+  }
 }
 
 template<typename T, typename F> auto map(const std::vector<T> &vec, F f)
@@ -1414,7 +1467,7 @@ template<typename T, typename F> auto map(const std::vector<T> &vec, F f)
   return ret;
 }
 
-void CCTraceBuilder::add_event_to_graph(CCGraph &g, unsigned i) const {
+void CCTraceBuilder::add_event_to_graph(SaturatedGraph &g, unsigned i) const {
   SaturatedGraph::EventKind kind = SaturatedGraph::NONE;
   SymAddr addr;
   if (is_load(i)) {
@@ -1431,11 +1484,11 @@ void CCTraceBuilder::add_event_to_graph(CCGraph &g, unsigned i) const {
                              [this](unsigned j){return prefix[j].iid;}));
 }
 
-const CCTraceBuilder::CCGraph &CCTraceBuilder::get_cached_graph
-(DecisionNode<CCGraph> &decision) {
+const SaturatedGraph &CCTraceBuilder::get_cached_graph
+(DecisionNode &decision) {
   const int depth = decision.depth;
   return decision.get_saturated_graph(
-    [depth, this](CCGraph &g) {
+    [depth, this](SaturatedGraph &g) {
       std::vector<bool> keep = causal_past(depth-1);
       for (unsigned i = 0; i < prefix.size(); ++i) {
         if (keep[i] && !g.has_event(prefix[i].iid)) {
@@ -1454,11 +1507,11 @@ CCTraceBuilder::try_sat
  std::map<SymAddr,std::vector<int>> &writes_by_address){
   Timing::Guard timing_guard(graph_context);
   unsigned last_change = changed_events.end()[-1];
-  DecisionNode<CCGraph> &decision = *prefix[last_change].decision_ptr;
+  DecisionNode &decision = *prefix[last_change].decision_ptr;
   int decision_depth = decision.depth;
   std::vector<bool> keep = causal_past(decision_depth);
 
-  CCGraph g(get_cached_graph(decision).clone());
+  SaturatedGraph g(get_cached_graph(decision).clone());
   for (unsigned i = 0; i < prefix.size(); ++i) {
     if (keep[i] && i != last_change && !g.has_event(prefix[i].iid)) {
       add_event_to_graph(g, i);
@@ -1476,10 +1529,10 @@ CCTraceBuilder::try_sat
   if (Option<std::vector<IID<int>>> res
       = try_generate_prefix(std::move(g), std::move(current_exec))) {
     if (conf.debug_print_on_reset) {
-      llvm::dbgs() << ": Found prefix by toposort:\n";
+      llvm::dbgs() << ": Heuristic found prefix\n";
       llvm::dbgs() << "[";
       for (IID<int> iid : *res) {
-        llvm::dbgs() << iid_string(iid) << ",\n";
+        llvm::dbgs() << iid_string(iid) << ",";
       }
       llvm::dbgs() << "]\n";
     }
@@ -1489,8 +1542,45 @@ CCTraceBuilder::try_sat
     return order_to_leaf(decision_depth, changed_events, std::move(order));
   }
 
-  assert(false && "Failed toposort");
-  return Leaf();
+  assert(false && "Tried sat");
+
+  std::unique_ptr<SatSolver> sat = conf.get_sat_solver();
+  {
+    Timing::Guard timing_guard(sat_context);
+
+    output_formula(*sat, writes_by_address, keep);
+    //output_formula(std::cerr, writes_by_address, keep);
+
+    if (!sat->check_sat()) {
+      if (conf.debug_print_on_reset) llvm::dbgs() << ": UNSAT\n";
+      return Leaf();
+    }
+    if (conf.debug_print_on_reset) llvm::dbgs() << ": SAT\n";
+
+  }
+  std::vector<unsigned> model = sat->get_model();
+
+  unsigned no_keep = 0;
+  for (unsigned i = 0; i < prefix.size(); ++i) {
+    if (keep[i]) no_keep++;
+  }
+  std::vector<unsigned> order(no_keep);
+  for (unsigned i = 0, var = 0; i < prefix.size(); ++i) {
+    if (keep[i]) {
+      unsigned pos = model[var++];
+      order[pos] = i;
+    }
+  }
+
+  if (conf.debug_print_on_reset) {
+    llvm::dbgs() << "[";
+    for (unsigned i : order) {
+      llvm::dbgs() << i << ",";
+    }
+    llvm::dbgs() << "]\n";
+  }
+
+  return order_to_leaf(decision_depth, changed_events, std::move(order));
 }
 
 Leaf CCTraceBuilder::order_to_leaf
@@ -1596,7 +1686,7 @@ long double CCTraceBuilder::estimate_trace_count() const{
 }
 
 bool CCTraceBuilder::check_for_cycles() {
-  return false; // avoided by construction; cycles will be detected during saturation
+  return false;
 }
 
 long double CCTraceBuilder::estimate_trace_count(int idx) const{
@@ -1612,14 +1702,3 @@ long double CCTraceBuilder::estimate_trace_count(int idx) const{
 
   return count;
 }
-
-bool CCTraceBuilder::CCGraph::saturate(){
-
-  return false;
-}
-
-
-
-
-
-
